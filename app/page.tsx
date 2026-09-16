@@ -2,44 +2,40 @@
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 
-// ---------------------------------------------------------------------
-// CONFIG — set NEXT_PUBLIC_API_URL in Vercel's Environment Variables,
-// pointing at your Render Web Service, e.g. https://mumbai-auctions-api.onrender.com
-// ---------------------------------------------------------------------
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://YOUR_RENDER_BACKEND_URL";
 
 // ---------------------------------------------------------------------
 // TYPES — mirror AuctionController.AuctionListResponse from the Java backend
 // ---------------------------------------------------------------------
-interface AuctionSummary {
-  id: string;
+interface AuctionProperty {
+  id: number;
+  propertyId: string;
   locality: string;
   submarket: "SOUTH_MUMBAI" | "WESTERN_SUBURBS" | "CENTRAL_MUMBAI";
   bankName: string;
   reservePrice: number;
-  carpetArea: number;
-  auctionDate: string;
-  rawNoticeUrl: string | null;
+  emdAmount: number;
+  emdLastDate: string | null;
+  auctionStartDate: string | null;
+  auctionEndDate: string | null;
   propertyType: string;
   reraRegistered: boolean;
   reraNumber: string | null;
-  auctionStatus: "UPCOMING" | "LIVE" | "SOLD" | "POSTPONED" | "CANCELLED";
-  riskIndex: number | null;
-  valuationGapPct: number | null;
-  marketPriceEstimateInr: number | null;
-  aiSummary: string | null;
-}
-
-interface DashboardMetrics {
-  totalActiveAuctions: number;
-  avgValuationGapPct: number;
-  avgRiskIndex: number;
-  totalMatchingRecords: number;
+  legalEncumbrances: string | null;
+  rawNoticeUrl: string | null;
+  aiInsights: {
+    summary?: string;
+    rationale?: string;
+    riskIndex?: number;
+    valuationGapPct?: number;
+    marketPriceEstimateInr?: number;
+    generatedAt?: string;
+  } | null;
+  createdAt: string;
 }
 
 interface AuctionListResponse {
-  auctions: AuctionSummary[];
-  metrics: DashboardMetrics;
+  content: AuctionProperty[];
   page: number;
   size: number;
   totalPages: number;
@@ -51,14 +47,6 @@ const REGION_LABELS: Record<string, string> = {
   SOUTH_MUMBAI: "South Mumbai",
   WESTERN_SUBURBS: "Western Suburbs",
   CENTRAL_MUMBAI: "Central Mumbai",
-};
-
-const STATUS_STYLES: Record<string, string> = {
-  UPCOMING: "bg-amber-100 text-amber-800 ring-amber-200",
-  LIVE: "bg-emerald-100 text-emerald-800 ring-emerald-200",
-  SOLD: "bg-slate-100 text-slate-600 ring-slate-200",
-  POSTPONED: "bg-orange-100 text-orange-800 ring-orange-200",
-  CANCELLED: "bg-red-100 text-red-800 ring-red-200",
 };
 
 // Thresholds driving the "High Risk" / "Under Value" badges
@@ -83,13 +71,12 @@ function formatDate(iso: string): string {
 }
 
 export default function MumbaiAuctionsDashboardPage() {
-  const [auctions, setAuctions] = useState<AuctionSummary[]>([]);
-  const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
+  const [auctions, setAuctions] = useState<AuctionProperty[]>([]);
+  const [metrics, setMetrics] = useState<{ total: number; avgGap: number; avgRisk: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [regionFilter, setRegionFilter] = useState<string>("ALL");
-  const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [searchLocality, setSearchLocality] = useState<string>("");
   const [page, setPage] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
@@ -100,7 +87,6 @@ export default function MumbaiAuctionsDashboardPage() {
     try {
       const params = new URLSearchParams();
       if (regionFilter !== "ALL") params.set("submarket", regionFilter);
-      if (statusFilter !== "ALL") params.set("status", statusFilter);
       if (searchLocality) params.set("locality", searchLocality);
       params.set("page", String(page));
       params.set("size", "20");
@@ -108,7 +94,6 @@ export default function MumbaiAuctionsDashboardPage() {
       const res = await fetch(`${API_BASE_URL}/api/v1/auctions?${params.toString()}`, {
         headers: {
           "Content-Type": "application/json",
-          // Replace with a real Supabase-JWT-derived account id once auth is wired up
           "X-Account-Id": "00000000-0000-0000-0000-000000000001",
         },
         cache: "no-store",
@@ -119,9 +104,12 @@ export default function MumbaiAuctionsDashboardPage() {
       }
 
       const data: AuctionListResponse = await res.json();
-      setAuctions(data.auctions);
-      setMetrics(data.metrics);
-      setTotalPages(data.totalPages);
+      const rows = data.content ?? [];
+      setAuctions(rows);
+      setTotalPages(data.totalPages ?? 1);
+      const avgGap = rows.length ? rows.reduce((s, a) => s + (a.aiInsights?.valuationGapPct ?? 0), 0) / rows.length : 0;
+      const avgRisk = rows.length ? rows.reduce((s, a) => s + (a.aiInsights?.riskIndex ?? 0), 0) / rows.length : 0;
+      setMetrics({ total: data.totalElements ?? 0, avgGap, avgRisk });
     } catch (err) {
       setError(
         err instanceof Error
@@ -132,7 +120,7 @@ export default function MumbaiAuctionsDashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [regionFilter, statusFilter, searchLocality, page]);
+  }, [regionFilter, searchLocality, page]);
 
   useEffect(() => {
     fetchAuctions();
@@ -141,27 +129,27 @@ export default function MumbaiAuctionsDashboardPage() {
   const headerMetrics = useMemo(
     () => [
       {
-        label: "Total Active Mumbai Auctions",
-        value: metrics ? metrics.totalActiveAuctions.toLocaleString("en-IN") : "—",
+        label: "Total Mumbai Auctions",
+        value: metrics ? metrics.total.toLocaleString("en-IN") : "—",
         accent: "text-indigo-600",
       },
       {
         label: "Avg. Property Discount Rate",
-        value: metrics ? `${metrics.avgValuationGapPct.toFixed(1)}%` : "—",
+        value: metrics ? `${metrics.avgGap.toFixed(1)}%` : "—",
         accent: "text-emerald-600",
       },
       {
         label: "Avg. AI Risk Index",
-        value: metrics ? metrics.avgRiskIndex.toFixed(1) : "—",
-        accent: metrics && metrics.avgRiskIndex > 50 ? "text-red-600" : "text-amber-600",
+        value: metrics ? metrics.avgRisk.toFixed(1) : "—",
+        accent: metrics && metrics.avgRisk > 50 ? "text-red-600" : "text-amber-600",
       },
       {
-        label: "Listings Matching Filters",
-        value: metrics ? metrics.totalMatchingRecords.toLocaleString("en-IN") : "—",
+        label: "Listings on This Page",
+        value: auctions.length.toLocaleString("en-IN"),
         accent: "text-slate-700",
       },
     ],
-    [metrics]
+    [metrics, auctions.length]
   );
 
   return (
@@ -210,25 +198,7 @@ export default function MumbaiAuctionsDashboardPage() {
           </select>
         </div>
 
-        <div className="flex flex-1 flex-col gap-1">
-          <label className="text-xs font-medium text-slate-500">Auction Status</label>
-          <select
-            value={statusFilter}
-            onChange={(e) => {
-              setPage(0);
-              setStatusFilter(e.target.value);
-            }}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100"
-          >
-            <option value="ALL">All Statuses</option>
-            <option value="UPCOMING">Upcoming</option>
-            <option value="LIVE">Live</option>
-            <option value="SOLD">Sold</option>
-            <option value="POSTPONED">Postponed</option>
-          </select>
-        </div>
-
-        <div className="flex flex-1 flex-col gap-1">
+<div className="flex flex-1 flex-col gap-1">
           <label className="text-xs font-medium text-slate-500">Locality Search</label>
           <input
             type="text"
@@ -250,38 +220,7 @@ export default function MumbaiAuctionsDashboardPage() {
         </button>
       </div>
 
-      {/* ---------------- Map Canvas Placeholder ---------------- */}
-      <div className="mb-6 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
-          <h2 className="text-sm font-semibold text-slate-700">Geospatial Auction Map</h2>
-          <span className="text-xs text-slate-400">Mapbox / Google Maps canvas</span>
-        </div>
-        {/*
-          MAP INTEGRATION PLACEHOLDER
-          Drop in a Mapbox GL JS or @react-google-maps/api canvas here.
-          Example (Mapbox):
-            <Map
-              mapboxAccessToken={process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN}
-              initialViewState={{ longitude: 72.8777, latitude: 19.0760, zoom: 10.5 }}
-              style={{ width: "100%", height: 420 }}
-              mapStyle="mapbox://styles/mapbox/light-v11"
-            >
-              {auctions.map((a) => <Marker key={a.id} ... />)}
-            </Map>
-        */}
-        <div className="flex h-[380px] w-full items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200">
-          <div className="text-center">
-            <p className="text-sm font-medium text-slate-500">
-              Map canvas placeholder — mount Mapbox GL / Google Maps here
-            </p>
-            <p className="mt-1 text-xs text-slate-400">
-              Center: Mumbai (19.0760° N, 72.8777° E) · Token: YOUR_MAPBOX_ACCESS_TOKEN
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* ---------------- Error State ---------------- */}
+{/* ---------------- Error State ---------------- */}
       {error && (
         <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
@@ -298,13 +237,13 @@ export default function MumbaiAuctionsDashboardPage() {
                   "Locality",
                   "Bank",
                   "Reserve Price",
-                  "Carpet Area",
+                  "Property Type",
                   "Discount",
                   "Risk Index",
                   "RERA",
                   "Auction Date",
                   "Signals",
-                  "Status",
+                  "Notice",
                 ].map((h) => (
                   <th
                     key={h}
@@ -334,8 +273,10 @@ export default function MumbaiAuctionsDashboardPage() {
 
               {!loading &&
                 auctions.map((a) => {
-                  const isHighRisk = (a.riskIndex ?? 0) >= HIGH_RISK_THRESHOLD;
-                  const isUnderValue = (a.valuationGapPct ?? 0) >= UNDER_VALUE_THRESHOLD;
+                  const riskIndex = a.aiInsights?.riskIndex ?? 0;
+                  const valuationGapPct = a.aiInsights?.valuationGapPct ?? 0;
+                  const isHighRisk = riskIndex >= HIGH_RISK_THRESHOLD;
+                  const isUnderValue = valuationGapPct >= UNDER_VALUE_THRESHOLD;
 
                   return (
                     <tr key={a.id} className="transition hover:bg-slate-50">
@@ -350,13 +291,13 @@ export default function MumbaiAuctionsDashboardPage() {
                         {formatInrCrore(a.reservePrice)}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-slate-600">
-                        {a.carpetArea.toLocaleString("en-IN")} sqft
+                        {a.propertyType}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-slate-600">
-                        {a.valuationGapPct !== null ? `${a.valuationGapPct.toFixed(1)}%` : "—"}
+                        {valuationGapPct ? `${valuationGapPct.toFixed(1)}%` : "—"}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-slate-600">
-                        {a.riskIndex !== null ? `${a.riskIndex.toFixed(0)} / 100` : "—"}
+                        {riskIndex ? `${riskIndex.toFixed(0)} / 100` : "—"}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3">
                         {a.reraRegistered ? (
@@ -370,7 +311,7 @@ export default function MumbaiAuctionsDashboardPage() {
                         )}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3 text-slate-600">
-                        {formatDate(a.auctionDate)}
+                        {a.auctionStartDate ? formatDate(a.auctionStartDate) : "—"}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3">
                         <div className="flex flex-wrap gap-1">
@@ -390,13 +331,10 @@ export default function MumbaiAuctionsDashboardPage() {
                         </div>
                       </td>
                       <td className="whitespace-nowrap px-4 py-3">
-                        <span
-                          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${
-                            STATUS_STYLES[a.auctionStatus] ?? "bg-slate-100 text-slate-600 ring-slate-200"
-                          }`}
-                        >
-                          {a.auctionStatus}
-                        </span>
+                        {a.rawNoticeUrl ? (
+                          <a href={a.rawNoticeUrl} target="_blank" rel="noopener noreferrer"
+                            className="text-xs text-indigo-600 hover:underline">Notice</a>
+                        ) : <span className="text-xs text-slate-300">—</span>}
                       </td>
                     </tr>
                   );
